@@ -70,6 +70,10 @@ This is still a draft. The point is to make the first GitHub-side validation
 close to upstream, then tighten it once you know which exact native pieces still
 need extra handling.
 
+The workflow intentionally invokes helper scripts via `bash ./scripts/...`
+instead of relying on executable bits, because file mode preservation is easy to
+lose when bootstrapping a fresh GitHub repo by hand.
+
 ## What This Repo Should Own
 
 - Upstream source fetch and build.
