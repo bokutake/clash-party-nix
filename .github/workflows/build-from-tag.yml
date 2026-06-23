@@ -1,0 +1,110 @@
+name: build-from-tag
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Upstream Clash Party git tag, for example v1.9.6. Empty means use the pushed tag.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: amd64
+          - arch: arm64
+            target: arm64
+
+    steps:
+      - name: Checkout draft repo
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream tag
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.upstream_tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [ -z "$tag" ]; then
+            echo "upstream tag is empty" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Clone upstream at requested tag
+        run: |
+          git clone https://github.com/mihomo-party-org/clash-party upstream
+          cd upstream
+          git checkout "${{ steps.ref.outputs.tag }}"
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: upstream/pnpm-lock.yaml
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            ruby \
+            rpm \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            patchelf \
+            xvfb
+
+      - name: Build upstream release
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          npm_config_target_arch: ${{ matrix.arch }}
+        run: |
+          ./scripts/build-release.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}"
+
+      - name: Smoke test built output
+        run: |
+          ./scripts/smoke-test.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-party-linux-${{ steps.ref.outputs.tag }}-${{ matrix.target }}
+          path: |
+            upstream/dist/*.sha256
+            upstream/dist/*.deb
+            upstream/dist/*.rpm
+          if-no-files-found: error
