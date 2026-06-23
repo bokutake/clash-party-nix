@@ -95,16 +95,19 @@ jobs:
         run: |
           bash ./scripts/build-release.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}"
 
+      - name: Repackage Linux tree as tar.xz
+        run: |
+          bash ./scripts/package-linux-tarball.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}" "${{ steps.ref.outputs.tag }}"
+
       - name: Smoke test built output
         run: |
-          bash ./scripts/smoke-test.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}"
+          bash ./scripts/smoke-test.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}" "${{ steps.ref.outputs.tag }}"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: clash-party-linux-${{ steps.ref.outputs.tag }}-${{ matrix.target }}
           path: |
-            upstream/dist/*.sha256
-            upstream/dist/*.deb
-            upstream/dist/*.rpm
+            upstream/dist/*.tar.xz
+            upstream/dist/*.tar.xz.sha256
           if-no-files-found: error

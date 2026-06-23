@@ -22,13 +22,23 @@ Target:
 ├── .github/
 │   └── workflows/
 │       └── build-from-tag.yml
+├── modules/
+│   ├── home-manager/
+│   └── nixos/
+├── lib/
+├── packages/
+│   ├── clash-party-unwrapped.nix
+│   ├── clash-party.nix
+│   ├── default.nix
+│   └── sources.nix
 ├── nix/
 │   ├── default.nix
 │   └── clash-party.nix
+├── flake.nix
 ├── scripts/
 │   ├── build-release.sh
+│   ├── package-linux-tarball.sh
 │   └── smoke-test.sh
-├── flake.nix
 ├── package.json
 └── README.md
 ```
@@ -38,9 +48,7 @@ Target:
 1. GitHub Actions is triggered either by pushing a `v*` tag or by manual dispatch.
 2. The workflow clones upstream at the requested tag.
 3. It runs the upstream-style Linux build matrix for `amd64` and `arm64`.
-4. It uploads either:
-   - a built Linux artifact, or
-   - a source snapshot plus lockfiles for Nix to rebuild reproducibly.
+4. It repackages the built Linux app tree into a Nix-friendly `tar.xz`.
 5. The personal Nix repo updates only the consumed source/artifact pin and hash.
 
 ## Current Workflow Shape
@@ -56,6 +64,9 @@ Target:
   - `pnpm/action-setup@v4`
   - `corepack enable`
   - stable Rust
+- Output:
+  - `clash-party-linux-<version>-<target>.tar.xz`
+  - `clash-party-linux-<version>-<target>.tar.xz.sha256`
 - Linux deps:
   - `build-essential`
   - `pkg-config`
@@ -66,9 +77,24 @@ Target:
   - `patchelf`
   - `xvfb`
 
-This is still a draft. The point is to make the first GitHub-side validation
-close to upstream, then tighten it once you know which exact native pieces still
-need extra handling.
+This is still a draft. The point is to keep the actual build close to upstream,
+while making the published artifact match what the personal flake really wants
+to consume.
+
+The repository now also contains an initial reusable flake skeleton:
+
+- `packages/`
+  - `clash-party-unwrapped.nix` consumes the published `tar.xz`
+  - `clash-party.nix` applies Nix-specific wrapping and sidecar relocation
+- `modules/nixos/`
+  - generic system integration for sidecar materialization
+- `modules/home-manager/`
+  - generic declarative config generation with explicit link inputs
+- `lib/`
+  - shared helpers that will absorb the stronger type and mapping logic over time
+
+`packages/sources.nix` is intentionally a metadata stub. Fill it with the
+published artifact URL and hash once the release pipeline is finalized.
 
 The workflow intentionally invokes helper scripts via `bash ./scripts/...`
 instead of relying on executable bits, because file mode preservation is easy to
@@ -78,7 +104,7 @@ lose when bootstrapping a fresh GitHub repo by hand.
 
 - Upstream source fetch and build.
 - Native module correctness, including `sysproxy-rs`.
-- Linux artifact smoke tests.
+- Linux tarball assembly and smoke tests.
 - Release metadata and checksums.
 
 ## What The Personal Flake Should Still Own
@@ -91,17 +117,20 @@ lose when bootstrapping a fresh GitHub repo by hand.
 
 ## Minimal Smoke Tests
 
-- `clash-party --help` or equivalent binary startup check.
-- Launch the desktop binary under xvfb and assert the main process does not die.
 - Assert packaged output contains:
+  - `bin/clash-party`
+  - `bin/mihomo-party`
+  - `lib/clash-party/resources/app.asar`
+  - `share/applications/mihomo-party.desktop`
+- Optionally launch the desktop binary under xvfb and assert the main process
+  does not die.
+- Assert the upstream source still contains:
   - `resources/app.asar`
-  - `resources/app.asar.unpacked`
-  - a Linux `sysproxy-rs` native binding
-  - `resources/sidecar/mihomo`
+  - `src/native/sysproxy`
 
 ## Notes
 
-- If upstream keeps Electron Builder output stable, consuming the built Linux
-  artifact is the least work for the personal flake.
-- If upstream build output is unstable, consume a locked source snapshot and let
-  Nix rebuild it from source instead.
+- The workflow still uses the upstream Electron Builder path to produce a Linux
+  app bundle, but it no longer treats `deb` or `rpm` as the public artifact.
+- The tarball layout is intentionally closer to a Nix install tree:
+  `bin/`, `lib/`, and `share/`.
