@@ -44,7 +44,7 @@ It:
 2. rebuilds `amd64` and `arm64`
 3. publishes release artifacts to GitHub Releases
 4. rewrites `packages/sources.nix` with the final release URLs and hashes
-5. commits the updated source metadata back to the default branch
+5. opens a pull request with the updated source metadata
 
 ## Operational Notes
 

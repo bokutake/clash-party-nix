@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -161,6 +162,8 @@ jobs:
       - resolve-tag
       - publish-release
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -201,18 +204,34 @@ jobs:
           }
           EOF
 
-      - name: Commit updated sources
+      - name: Detect source metadata changes
+        id: detect
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           if git diff --quiet -- packages/sources.nix; then
             echo "packages/sources.nix already up to date"
-            exit 0
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-          git add packages/sources.nix
-          git commit -m "Update packaged sources for ${{ needs.resolve-tag.outputs.tag }}"
-          git push
+      - name: Create source metadata pull request
+        if: steps.detect.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/update-sources-${{ needs.resolve-tag.outputs.tag }}
+          delete-branch: true
+          commit-message: Update packaged sources for ${{ needs.resolve-tag.outputs.tag }}
+          title: Update packaged sources for ${{ needs.resolve-tag.outputs.tag }}
+          body: |
+            This pull request was created automatically after publishing release artifacts for `${{ needs.resolve-tag.outputs.tag }}`.
+
+            It updates `packages/sources.nix` with the final GitHub Release URLs and hashes for:
+
+            - `x86_64-linux`
+            - `aarch64-linux`
+          labels: |
+            dependencies
+            upstream-sync
