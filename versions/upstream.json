@@ -1,0 +1,4 @@
+{
+  "// renovate: datasource=github-tags depName=mihomo-party-org/clash-party versioning=semver": "Tracked upstream Clash Party tag",
+  "clashPartyTag": "v1.9.6"
+}

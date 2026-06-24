@@ -1,0 +1,31 @@
+{
+  extends: ["config:recommended"],
+  dependencyDashboard: true,
+  dependencyDashboardApproval: true,
+  prConcurrentLimit: 1,
+  branchConcurrentLimit: 1,
+  labels: ["dependencies", "upstream-sync"],
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["^versions/upstream\\.json$"],
+      matchStrings: [
+        "\"clashPartyTag\":\\s*\"(?<currentValue>v?[^\"]+)\""
+      ],
+      depNameTemplate: "mihomo-party-org/clash-party",
+      datasourceTemplate: "github-tags",
+      versioningTemplate: "semver"
+    }
+  ],
+  packageRules: [
+    {
+      matchManagers: ["custom.regex"],
+      matchPackageNames: ["mihomo-party-org/clash-party"],
+      commitMessageTopic: "tracked upstream Clash Party tag",
+      branchTopic: "clash-party-upstream",
+      prBodyNotes: [
+        "This PR updates the tracked upstream tag only. Release assets and `packages/sources.nix` are updated after merge by the release workflow."
+      ]
+    }
+  ]
+}

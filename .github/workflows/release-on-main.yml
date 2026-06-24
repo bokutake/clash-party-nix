@@ -1,0 +1,218 @@
+name: release-on-main
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "versions/upstream.json"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Optional upstream Clash Party tag override.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Resolve tracked upstream tag
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$(jq -r '.clashPartyTag' versions/upstream.json)"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.upstream_tag }}" ]; then
+            tag="${{ inputs.upstream_tag }}"
+          fi
+
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "failed to resolve upstream tag" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: amd64
+            system: x86_64-linux
+          - arch: arm64
+            target: arm64
+            system: aarch64-linux
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Clone upstream at requested tag
+        run: |
+          git clone https://github.com/mihomo-party-org/clash-party upstream
+          cd upstream
+          git checkout "${{ needs.resolve-tag.outputs.tag }}"
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: upstream/pnpm-lock.yaml
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            ruby \
+            rpm \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            patchelf \
+            xvfb
+
+      - name: Build upstream release
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          npm_config_target_arch: ${{ matrix.arch }}
+        run: |
+          bash ./scripts/build-release.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}"
+
+      - name: Repackage Linux tree as tar.xz
+        run: |
+          bash ./scripts/package-linux-tarball.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}" "${{ needs.resolve-tag.outputs.tag }}"
+
+      - name: Smoke test built output
+        run: |
+          bash ./scripts/smoke-test.sh ./upstream "${{ matrix.arch }}" "${{ matrix.target }}" "${{ needs.resolve-tag.outputs.tag }}"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-party-linux-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.target }}
+          path: |
+            upstream/dist/*.tar.xz
+            upstream/dist/*.tar.xz.sha256
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - resolve-tag
+      - build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: clash-party-linux-${{ needs.resolve-tag.outputs.tag }}-*
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-tag.outputs.tag }}
+          name: Clash Party Packaging ${{ needs.resolve-tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/*.tar.xz
+            release-artifacts/*.tar.xz.sha256
+
+  update-sources:
+    needs:
+      - resolve-tag
+      - publish-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: clash-party-linux-${{ needs.resolve-tag.outputs.tag }}-*
+          merge-multiple: true
+
+      - name: Rewrite packages/sources.nix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.resolve-tag.outputs.version }}"
+          tag="${{ needs.resolve-tag.outputs.tag }}"
+          owner_repo="${GITHUB_REPOSITORY}"
+          amd64_hash="$(awk '{print $1}' "release-artifacts/clash-party-linux-${version}-amd64.tar.xz.sha256")"
+          arm64_hash="$(awk '{print $1}' "release-artifacts/clash-party-linux-${version}-arm64.tar.xz.sha256")"
+
+          cat > packages/sources.nix <<EOF
+          {
+            x86_64-linux = {
+              version = "${version}";
+              url = "https://github.com/${owner_repo}/releases/download/${tag}/clash-party-linux-${version}-amd64.tar.xz";
+              hash = "sha256-$(printf '%s' "$amd64_hash" | xxd -r -p | base64 -w0)";
+            };
+
+            aarch64-linux = {
+              version = "${version}";
+              url = "https://github.com/${owner_repo}/releases/download/${tag}/clash-party-linux-${version}-arm64.tar.xz";
+              hash = "sha256-$(printf '%s' "$arm64_hash" | xxd -r -p | base64 -w0)";
+            };
+          }
+          EOF
+
+      - name: Commit updated sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- packages/sources.nix; then
+            echo "packages/sources.nix already up to date"
+            exit 0
+          fi
+
+          git add packages/sources.nix
+          git commit -m "Update packaged sources for ${{ needs.resolve-tag.outputs.tag }}"
+          git push

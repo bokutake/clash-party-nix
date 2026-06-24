@@ -1,0 +1,176 @@
+name: codex-review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - ".github/codex/**"
+      - ".github/workflows/**"
+      - "AGENTS.md"
+      - "modules/**"
+      - "packages/**"
+      - "scripts/**"
+      - "versions/upstream.json"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+
+      - name: Prepare Codex review context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .github/codex/context
+
+          cat > .github/codex/context/packaging-assumptions.md <<'EOF'
+          # Packaging Assumptions
+
+          The current packaging and CI logic assumes:
+
+          - upstream repository: `mihomo-party-org/clash-party`
+          - the tracked version is stored in `versions/upstream.json`
+          - Linux builds still use `electron-builder.yml`
+          - `scripts/build-release.sh` can patch `productName: Clash Party`
+          - upstream still supports:
+            - `pnpm prepare --<arch>`
+            - `pnpm build:linux --<arch>`
+          - native module source still exists under `src/native/sysproxy`
+          - the build still emits a Linux unpacked app directory
+          - `resources/app.asar` remains present in the final app tree
+          - the release archive layout remains:
+            - `bin/clash-party`
+            - `bin/mihomo-party`
+            - `lib/clash-party/resources/app.asar`
+            - `share/applications/mihomo-party.desktop`
+          - release artifacts are published as:
+            - `clash-party-linux-<version>-amd64.tar.xz`
+            - `clash-party-linux-<version>-arm64.tar.xz`
+          EOF
+
+          base_tag="$(git show "origin/${{ github.event.pull_request.base.ref }}:versions/upstream.json" 2>/dev/null | jq -r '.clashPartyTag // empty' || true)"
+          head_tag="$(jq -r '.clashPartyTag // empty' versions/upstream.json || true)"
+
+          if [ -z "$base_tag" ] || [ -z "$head_tag" ] || [ "$base_tag" = "$head_tag" ]; then
+            cat > .github/codex/context/upstream-change-summary.md <<'EOF'
+          # Upstream Change Summary
+
+          No upstream tag change was detected for this pull request. Review the
+          repository diff itself and focus on packaging assumptions, release
+          behavior, and module compatibility.
+          EOF
+          else
+            rm -rf /tmp/upstream-clash-party
+            git clone --filter=blob:none https://github.com/mihomo-party-org/clash-party /tmp/upstream-clash-party
+            cd /tmp/upstream-clash-party
+            git fetch --tags --force
+            git checkout "$head_tag"
+
+            {
+              echo "# Upstream Change Summary"
+              echo
+              echo "- previous tag: $base_tag"
+              echo "- new tag: $head_tag"
+              echo
+              echo "## Commit List"
+              git log --oneline "${base_tag}..${head_tag}" || true
+              echo
+              echo "## Changed Files"
+              git diff --name-status "${base_tag}..${head_tag}" || true
+              echo
+              echo "## High-Signal Paths"
+              git diff --name-only "${base_tag}..${head_tag}" -- \
+                electron-builder.yml \
+                package.json \
+                pnpm-lock.yaml \
+                src/native \
+                scripts \
+                build \
+                resources || true
+            } > "$GITHUB_WORKSPACE/.github/codex/context/upstream-change-summary.md"
+          fi
+
+      - name: Render Codex trigger comment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "<!-- codex-upstream-packaging-review -->"
+            echo "@codex review"
+            echo
+            echo "Review this pull request with a packaging-maintainer mindset."
+            echo
+            echo "Focus on likely breaking changes in:"
+            echo "- upstream build entrypoints"
+            echo "- native bindings such as sysproxy-rs"
+            echo "- Electron output layout"
+            echo "- release artifact naming"
+            echo "- smoke test assumptions"
+            echo "- Nix package and module compatibility"
+            echo
+            echo "Read \`AGENTS.md\` and \`.github/codex/prompts/upstream-packaging-review.md\` first."
+            echo
+            echo "Upstream summary:"
+            echo
+            sed -n '1,160p' .github/codex/context/upstream-change-summary.md
+          } > .github/codex/context/codex-trigger-comment.md
+
+      - name: Create or update Codex trigger comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const body = fs.readFileSync(".github/codex/context/codex-trigger-comment.md", "utf8");
+            const marker = "<!-- codex-upstream-packaging-review -->";
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((comment) =>
+              comment.user?.type === "Bot" && comment.body?.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }

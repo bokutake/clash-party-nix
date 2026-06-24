@@ -58,6 +58,7 @@ Each GitHub release publishes:
 - [Repository architecture](./docs/architecture.md)
 - [Migration from a personal flake](./docs/migration-from-personal-flake.md)
 - [Examples](./docs/examples.md)
+- [Maintenance and automation](./docs/maintenance.md)
 
 ## Example
 
