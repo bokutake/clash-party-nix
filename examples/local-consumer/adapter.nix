@@ -1,35 +1,17 @@
-{ config, lib, ... }:
+{ lib, osConfig, ... }:
 
 let
-  proxy = config.desktop.proxy;
+  proxy = lib.attrByPath [ "desktop" "proxy" ] {
+    enable = false;
+    mixedPort = null;
+    dnsPort = null;
+    systemProxy = {
+      enable = null;
+      mode = null;
+    };
+  } osConfig;
 in
 {
-  options.desktop.proxy = {
-    enable = lib.mkEnableOption "example local proxy adapter";
-
-    mixedPort = lib.mkOption {
-      type = lib.types.nullOr lib.types.port;
-      default = null;
-    };
-
-    dnsPort = lib.mkOption {
-      type = lib.types.nullOr lib.types.port;
-      default = null;
-    };
-
-    systemProxy = {
-      enable = lib.mkOption {
-        type = lib.types.nullOr lib.types.bool;
-        default = null;
-      };
-
-      mode = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-      };
-    };
-  };
-
   config = lib.mkIf proxy.enable {
     programs.clash-party.links = {
       mixedPort = proxy.mixedPort;

@@ -57,6 +57,12 @@
             modules = [
               home-manager.nixosModules.home-manager
               self.nixosModules.default
+              {
+                home-manager.sharedModules = [ self.homeManagerModules.default ];
+                home-manager.extraSpecialArgs = {
+                  inputs = { clash-party-packaging = self; };
+                };
+              }
               ./examples/local-consumer/nixos-example.nix
             ];
           };
